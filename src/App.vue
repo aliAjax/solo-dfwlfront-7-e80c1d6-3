@@ -1,191 +1,43 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, ref } from "vue";
+import OperationPanel from "./components/OperationPanel.vue";
+import StocktakePanel from "./components/StocktakePanel.vue";
+import LedgerTable from "./components/LedgerTable.vue";
+import TransactionLog from "./components/TransactionLog.vue";
+import BatchTraceModal from "./components/BatchTraceModal.vue";
+import { useInventoryStore } from "./stores/inventory";
+import { useToast } from "./composables/useToast";
+import { TX_TYPE_LABEL } from "./inventory/types";
 
-type Field = {
-  key: string;
-  label: string;
-  type?: "number" | "date" | "select";
-  options?: readonly string[];
-};
+const store = useInventoryStore();
+const { toasts, dismiss } = useToast();
 
-type RecordItem = {
-  id: string;
-  status: string;
-  notes: string;
-  createdAt: string;
-  [key: string]: string | number;
-};
-
-const project = {
-  "number": 7,
-  "folder": "dfwl/frontend/dfwlfront-7",
-  "framework": "vue",
-  "title": "加油站班次交接",
-  "subtitle": "录入油品销量和收款数据，自动计算当班总收入。",
-  "industry": "石油",
-  "stack": [
-    "Vue3",
-    "Vite",
-    "TypeScript",
-    "Element Plus"
-  ],
-  "storageKey": "dfwlfront-7-shift",
-  "formTitle": "新增交接记录",
-  "primaryAction": "保存交接",
-  "entityLabel": "班次",
-  "statuses": [
-    "待复核",
-    "已复核",
-    "有差异"
-  ],
-  "filters": [
-    "全部班次",
-    "早班",
-    "中班",
-    "晚班"
-  ],
-  "fields": [
-    {
-      "key": "shift",
-      "label": "班次",
-      "type": "select",
-      "options": [
-        "早班",
-        "中班",
-        "晚班"
-      ]
-    },
-    {
-      "key": "fuelSales",
-      "label": "油品销量L",
-      "type": "number"
-    },
-    {
-      "key": "cash",
-      "label": "现金收入",
-      "type": "number"
-    },
-    {
-      "key": "digital",
-      "label": "电子支付",
-      "type": "number"
-    }
-  ],
-  "records": [
-    {
-      "shift": "早班",
-      "fuelSales": 4280,
-      "cash": 8300,
-      "digital": 21000,
-      "status": "已复核",
-      "notes": "账实一致"
-    },
-    {
-      "shift": "中班",
-      "fuelSales": 3910,
-      "cash": 6400,
-      "digital": 19800,
-      "status": "待复核",
-      "notes": "等待站长确认"
-    }
-  ],
-  "metricLabels": [
-    "交接记录",
-    "已复核",
-    "总收入"
-  ]
-} as const;
-
-const fields = project.fields as readonly Field[];
-const statuses = [...project.statuses];
-
-function createBlank() {
-  return Object.fromEntries(fields.map((field) => [field.key, field.type === "number" ? 0 : ""]));
+const traceBatchId = ref<string | null>(null);
+function openTrace(batchId: string) {
+  traceBatchId.value = batchId;
 }
-
-function loadRecords(): RecordItem[] {
-  const raw = localStorage.getItem(project.storageKey);
-  if (!raw) {
-    return project.records.map((record, index) => ({
-      ...record,
-      id: `seed-${index + 1}`,
-      createdAt: new Date(Date.now() - index * 86400000).toISOString()
-    })) as RecordItem[];
-  }
-  try {
-    return JSON.parse(raw) as RecordItem[];
-  } catch {
-    return [];
-  }
-}
-
-const records = ref<RecordItem[]>(loadRecords());
-const form = reactive<Record<string, string | number>>(createBlank());
-const note = ref("");
-const filter = ref(project.filters[0]);
-
-const filteredRecords = computed(() => {
-  if (filter.value.startsWith("全部")) return records.value;
-  return records.value.filter((record) => Object.values(record).includes(filter.value));
-});
 
 const metrics = computed(() => {
-  const total = records.value.length;
-  const second = records.value.filter((record) => record.status === statuses[1]).length;
-  const third = records.value.filter((record) => record.status === statuses[2]).length;
-  const numberValues = records.value.flatMap((record) =>
-    fields.filter((field) => field.type === "number").map((field) => Number(record[field.key] || 0))
-  );
-  const sum = numberValues.reduce((acc, value) => acc + value, 0);
-  return [total, second || sum, third || Math.round(sum / Math.max(total, 1))];
+  const totalQty = store.balances.reduce((a, b) => a + b.qty, 0);
+  const recalledBatches = new Set([...store.state.recalled]).size;
+  const frozen = store.openStocktakes.length;
+  return [
+    { label: "在库批次行", value: store.balances.length },
+    { label: "在库总数量", value: totalQty },
+    { label: "已召回批次", value: recalledBatches },
+    { label: "冻结库位", value: frozen },
+    { label: "累计流水", value: store.transactions.length }
+  ];
 });
 
-const chartRows = computed(() => statuses.map((status) => ({
-  status,
-  value: records.value.filter((record) => record.status === status).length
-})));
+const lastTx = computed(() =>
+  store.transactions.length ? TX_TYPE_LABEL[store.transactions[store.transactions.length - 1].type] : "—"
+);
 
-const maxChart = computed(() => Math.max(1, ...chartRows.value.map((row) => row.value)));
-
-function persist() {
-  localStorage.setItem(project.storageKey, JSON.stringify(records.value));
-}
-
-function nextStatus(status: string) {
-  const index = statuses.indexOf(status);
-  return statuses[(index + 1) % statuses.length];
-}
-
-function primaryText(record: RecordItem) {
-  const first = fields[0];
-  const second = fields[1];
-  return [record[first.key], record[second.key]].filter(Boolean).join(" / ") || project.entityLabel;
-}
-
-function submit() {
-  records.value = [
-    {
-      ...form,
-      id: crypto.randomUUID(),
-      status: statuses[0],
-      notes: note.value || "暂无备注",
-      createdAt: new Date().toISOString()
-    } as RecordItem,
-    ...records.value
-  ];
-  Object.assign(form, createBlank());
-  note.value = "";
-  persist();
-}
-
-function flow(record: RecordItem) {
-  record.status = nextStatus(record.status);
-  persist();
-}
-
-function remove(id: string) {
-  records.value = records.value.filter((record) => record.id !== id);
-  persist();
+function resetDemo() {
+  if (window.confirm("确定恢复演示数据？当前所有流水将被清空并重放种子流水。")) {
+    store.resetDemo();
+  }
 }
 </script>
 
@@ -194,78 +46,56 @@ function remove(id: string) {
     <div class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">{{ project.industry }}行业前端最小闭环</p>
-          <h1>{{ project.title }}</h1>
-          <p class="subtitle">{{ project.subtitle }}</p>
+          <p class="eyebrow">加油站便利店 · 批次库存台</p>
+          <h1>批次库存与流水台账</h1>
+          <p class="subtitle">
+            按批次记录入库 / 售出 / 退库 / 调拨 / 召回；售出按先到期先出自动扣批，
+            跨店调拨出入成对，盘点冻结库位、差异只走调整流水，余额全部由不可变流水重放得出。
+          </p>
         </div>
-        <div class="stack">
-          <span v-for="item in project.stack" :key="item" class="tag">{{ item }}</span>
+        <div class="top-actions">
+          <span class="last-tx">最近流水：{{ lastTx }}</span>
+          <button type="button" class="secondary" data-testid="btn-reset" @click="resetDemo">重置演示数据</button>
         </div>
       </header>
 
       <section class="metrics">
-        <article v-for="(label, index) in project.metricLabels" :key="label" class="metric">
-          <span>{{ label }}</span>
-          <strong>{{ metrics[index] }}</strong>
+        <article v-for="m in metrics" :key="m.label" class="metric">
+          <span>{{ m.label }}</span>
+          <strong>{{ m.value }}</strong>
         </article>
       </section>
 
-      <section class="workspace">
-        <form class="panel" @submit.prevent="submit">
-          <h2>{{ project.formTitle }}</h2>
-          <div class="form-grid">
-            <label v-for="field in fields" :key="field.key">
-              {{ field.label }}
-              <select v-if="field.type === 'select'" v-model="form[field.key]" required>
-                <option value="">请选择</option>
-                <option v-for="option in field.options" :key="option">{{ option }}</option>
-              </select>
-              <input v-else v-model="form[field.key]" :type="field.type || 'text'" required />
-            </label>
-            <label>
-              备注
-              <textarea v-model="note" placeholder="填写处理说明或现场备注" />
-            </label>
-            <button type="submit">{{ project.primaryAction }}</button>
-          </div>
-        </form>
+      <div class="layout">
+        <div class="col-left">
+          <OperationPanel />
+          <StocktakePanel />
+        </div>
+        <div class="col-right">
+          <LedgerTable @trace="openTrace" />
+          <TransactionLog />
+        </div>
+      </div>
 
-        <section class="list-panel">
-          <div class="toolbar">
-            <h2>{{ project.entityLabel }}列表</h2>
-            <select v-model="filter">
-              <option v-for="item in project.filters" :key="item">{{ item }}</option>
-            </select>
-          </div>
+      <footer class="foot">
+        数据保存在本机浏览器 localStorage；刷新后余额由全部流水重新重放，不存在可被直接改写的余额字段。
+      </footer>
+    </div>
 
-          <div class="record-grid">
-            <div v-if="filteredRecords.length === 0" class="empty">暂无匹配数据</div>
-            <article v-for="record in filteredRecords" :key="record.id" class="record">
-              <div class="record-head">
-                <p class="record-title">{{ primaryText(record) }}</p>
-                <span class="status">{{ record.status }}</span>
-              </div>
-              <div class="details">
-                <span v-for="field in fields" :key="field.key">{{ field.label }}: {{ record[field.key] }}</span>
-              </div>
-              <p class="note">{{ record.notes }}</p>
-              <div class="actions">
-                <button type="button" @click="flow(record)">流转状态</button>
-                <button class="secondary" type="button" @click="navigator.clipboard?.writeText(primaryText(record))">复制摘要</button>
-                <button class="danger" type="button" @click="remove(record.id)">删除</button>
-              </div>
-            </article>
-          </div>
+    <BatchTraceModal :batch-id="traceBatchId" @close="traceBatchId = null" />
 
-          <div class="mini-chart">
-            <div v-for="row in chartRows" :key="row.status" class="bar">
-              <span>{{ row.status }}</span>
-              <div class="bar-track"><div class="bar-fill" :style="{ width: `${(row.value / maxChart) * 100}%` }" /></div>
-              <strong>{{ row.value }}</strong>
-            </div>
-          </div>
-        </section>
-      </section>
+    <div class="toast-stack" data-testid="toast-stack">
+      <div
+        v-for="t in toasts"
+        :key="t.id"
+        class="toast"
+        :class="t.kind"
+        :data-testid="t.kind === 'ok' ? 'toast-ok' : 'toast-err'"
+        @click="dismiss(t.id)"
+      >
+        <b>{{ t.kind === "ok" ? "成功" : "整单失败" }}</b>
+        <span>{{ t.text }}</span>
+      </div>
     </div>
   </main>
 </template>
